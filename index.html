@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>صفحة المحكمين</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main><h1>صفحة المحكمين</h1><div id="app"><div class="msg">جاري التحميل…</div></div></main>
+<script type="module">
+import {createClient} from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm";
+import {SUPABASE_URL,SUPABASE_ANON_KEY} from "./supabase-config.js";
+const sb=createClient(SUPABASE_URL,SUPABASE_ANON_KEY);
+
+let Q=[],J={name:"",deleted:[],added:[]},uid=null,eq=null;
+const app=document.getElementById("app");
+const esc=s=>{const d=document.createElement("div");d.textContent=s==null?"":String(s);return d.innerHTML};
+const newId=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,5);
+const norm=j=>({name:(j&&j.name)||"",deleted:(j&&j.deleted)||[],added:(j&&j.added)||[]});
+const eff=()=>Q.filter(q=>!J.deleted.includes(q.id)).concat(J.added);
+const typing=()=>document.activeElement&&document.activeElement.tagName==="INPUT";
+const fail=e=>{app.innerHTML='<div class="msg">حدث خطأ: '+esc(e.message||e)+'</div>';console.error(e)};
+
+function render(){
+  const E=eff();
+  app.innerHTML='<div class="card"><label>اسمك</label><input id="name" value="'+esc(J.name)+'"></div>'
+  +'<div class="card"><h2>الأسئلة ('+E.length+')</h2>'
+  +(E.map(q=>eq===q.id
+    ?'<div class="qr"><input id="ein" value="'+esc(q.text)+'"><button data-a="save" data-id="'+q.id+'">حفظ</button><button class="s" data-a="cancel">إلغاء</button></div>'
+    :'<div class="qr"><span>'+esc(q.text)+'</span><button class="s" data-a="edit" data-id="'+q.id+'">تعديل</button><button class="d" data-a="del" data-id="'+q.id+'">حذف</button></div>').join("")||'<div class="msg">لا توجد أسئلة</div>')
+  +'<div class="row"><input id="nin" placeholder="سؤال جديد" style="flex:1"><button data-a="add">إضافة</button></div></div>';
+}
+async function load(){
+  const [q,j]=await Promise.all([
+    sb.from("questions").select("*").order("position"),
+    sb.from("judges").select("*").eq("id",uid).maybeSingle()]);
+  if(q.error)throw q.error;if(j.error)throw j.error;
+  Q=q.data;J=norm(j.data);render();
+}
+async function persist(n){
+  const name=document.getElementById("name").value.trim();
+  if(!name){alert("اكتب اسمك أولا");return false}
+  const {error}=await sb.from("judges").upsert({id:uid,name,deleted:n.deleted,added:n.added});
+  if(error){alert("تعذر الحفظ: "+error.message);return false}
+  await load();return true;
+}
+const cp=()=>({deleted:[...J.deleted],added:J.added.map(a=>({...a}))});
+
+app.addEventListener("click",async e=>{
+  const b=e.target.closest("button");if(!b)return;
+  const a=b.dataset.a,id=b.dataset.id,n=cp();
+  if(a==="edit"){eq=id;render()}
+  else if(a==="cancel"){eq=null;render()}
+  else if(a==="add"){const t=document.getElementById("nin").value.trim();if(!t)return;n.added.push({id:newId(),text:t});await persist(n)}
+  else if(a==="del"){const i=n.added.findIndex(x=>x.id===id);if(i>=0)n.added.splice(i,1);else n.deleted.push(id);await persist(n)}
+  else if(a==="save"){
+    const t=document.getElementById("ein").value.trim();if(!t)return;
+    const x=n.added.find(y=>y.id===id);
+    if(x)x.text=t;else{n.deleted.push(id);n.added.push({id:newId(),text:t,replaces:id})}
+    if(await persist(n))eq=null,render();
+  }
+});
+
+try{
+  let {data:{session}}=await sb.auth.getSession();
+  if(!session){const r=await sb.auth.signInAnonymously();if(r.error)throw r.error;session=r.data.session}
+  uid=session.user.id;
+  await load();
+  setInterval(()=>{if(!typing()&&!eq)load().catch(()=>{})},15000);
+}catch(e){fail(e)}
+</script>
+</body>
+</html>

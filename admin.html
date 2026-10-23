@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>صفحة الأدمن</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main><h1>صفحة الأدمن</h1><div id="app"><div class="msg">جاري التحميل…</div></div></main>
+<script type="module">
+import {createClient} from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm";
+import {SUPABASE_URL,SUPABASE_ANON_KEY} from "./supabase-config.js";
+const sb=createClient(SUPABASE_URL,SUPABASE_ANON_KEY);
+
+const app=document.getElementById("app");
+const esc=s=>{const d=document.createElement("div");d.textContent=s==null?"":String(s);return d.innerHTML};
+const newId=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,5);
+const typing=()=>document.activeElement&&document.activeElement.tagName==="INPUT";
+let Q=[],judges=[],timer=null;
+
+function loginView(msg){
+  clearInterval(timer);
+  app.innerHTML='<div class="card"><h2>🔒 تسجيل دخول الأدمن</h2><label>الإيميل</label><input id="em" type="email" autocomplete="username"><label>الرقم السري</label><input id="pw" type="password" autocomplete="current-password"><div class="row"><button id="go">دخول</button></div><div class="err">'+esc(msg||"")+'</div></div>';
+  const go=async()=>{
+    const {error}=await sb.auth.signInWithPassword({email:document.getElementById("em").value.trim(),password:document.getElementById("pw").value});
+    if(error){loginView("الإيميل أو الرقم السري غير صحيح");return}
+    enter();
+  };
+  document.getElementById("go").onclick=go;
+  document.getElementById("pw").onkeydown=e=>{if(e.key==="Enter")go()};
+}
+async function enter(){
+  const {data:{session}}=await sb.auth.getSession();
+  if(!session||session.user.is_anonymous){loginView();return}
+  const r=await sb.rpc("is_admin");
+  if(r.error||r.data!==true){await sb.auth.signOut();loginView("هذا الحساب ليس حساب الأدمن");return}
+  await refresh();
+  clearInterval(timer);timer=setInterval(()=>{if(!typing())refresh()},10000);
+}
+async function refresh(){
+  const [q,j]=await Promise.all([sb.from("questions").select("*").order("position"),sb.from("judges").select("*")]);
+  if(q.error||j.error){app.innerHTML='<div class="msg">حدث خطأ: '+esc((q.error||j.error).message)+'</div>';return}
+  Q=q.data;judges=j.data;shell();
+}
+function shell(){
+  const nm=id=>{const q=Q.find(x=>x.id===id);return q?q.text:"(سؤال محذوف)"};
+  app.innerHTML='<div class="row" style="margin:0 0 12px"><button class="s" data-a="refresh">تحديث</button><button class="s" data-a="out">تسجيل الخروج</button></div>'
+  +'<div class="card"><h2>أسئلة الاستبيان</h2>'+Q.map((q,i)=>'<div class="row"><input data-i="'+i+'" value="'+esc(q.text)+'" style="flex:1"><button class="d" data-a="qdel" data-i="'+i+'">حذف</button></div>').join("")
+  +'<div class="row"><button class="s" data-a="qadd">إضافة سؤال</button><button data-a="qsave">حفظ الأسئلة</button></div></div>'
+  +'<h2>تعديلات المحكمين ('+judges.length+')</h2>'
+  +(judges.map(j=>{
+    const del=j.deleted||[],add=j.added||[];
+    const rp=add.filter(a=>a.replaces),ad=add.filter(a=>!a.replaces),dl=del.filter(d=>!add.some(a=>a.replaces===d));
+    return '<div class="card"><b>'+esc(j.name||"بدون اسم")+'</b>'
+    +(!del.length&&!add.length?'<div class="mu">لم يعدّل شيئا</div>':"")
+    +rp.map(a=>'<div class="mu">✏️ استبدل «'+esc(nm(a.replaces))+'» بـ «'+esc(a.text)+'»</div>').join("")
+    +dl.map(d=>'<div class="mu">🗑️ حذف «'+esc(nm(d))+'»</div>').join("")
+    +ad.map(a=>'<div class="mu">➕ أضاف «'+esc(a.text)+'»</div>').join("")
+    +'<div class="row"><button class="d" data-a="reset" data-id="'+j.id+'">مسح تعديلاته</button></div></div>'}).join("")||'<div class="msg">لا توجد تعديلات بعد</div>');
+}
+const readQ=()=>Q.map((q,i)=>{const el=app.querySelector('input[data-i="'+i+'"]');return {id:q.id,text:el?el.value:q.text}});
+app.addEventListener("click",async e=>{
+  const b=e.target.closest("button");if(!b||!b.dataset.a)return;
+  const a=b.dataset.a;
+  if(a==="out"){await sb.auth.signOut();loginView()}
+  else if(a==="refresh")refresh();
+  else if(a==="qadd"){Q=readQ().concat({id:newId(),text:"سؤال جديد"});shell()}
+  else if(a==="qdel"){Q=readQ();Q.splice(+b.dataset.i,1);shell()}
+  else if(a==="qsave"){
+    const rows=readQ().filter(q=>q.text.trim()).map((q,i)=>({id:q.id,text:q.text.trim(),position:i}));
+    let r=rows.length?await sb.from("questions").upsert(rows):{};
+    if(!r.error){
+      r=rows.length?await sb.from("questions").delete().not("id","in","("+rows.map(x=>'"'+x.id+'"').join(",")+")"):await sb.from("questions").delete().neq("id","");
+    }
+    if(r.error)alert("تعذر الحفظ: "+r.error.message);else{alert("تم الحفظ");refresh()}
+  }
+  else if(a==="reset"){
+    if(!confirm("مسح كل تعديلات هذا المحكم؟"))return;
+    const r=await sb.from("judges").delete().eq("id",b.dataset.id);
+    if(r.error)alert("تعذر المسح: "+r.error.message);else refresh();
+  }
+});
+try{await enter()}catch(e){app.innerHTML='<div class="msg">حدث خطأ: '+esc(e.message||e)+'</div>'}
+</script>
+</body>
+</html>
